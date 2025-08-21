@@ -1,16 +1,14 @@
-"use client";
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+// app/page.tsx
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 
-export default function Home() {
-  const router = useRouter();
+export default async function Page() {
+  const cookieStore = await cookies()
+  const token = cookieStore.get('token')
 
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.push("/login");
-    }
-  }, [router]);
+  if (!token) {
+    redirect("/login");
+  }
 
   return (
     <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">

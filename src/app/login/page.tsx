@@ -17,19 +17,24 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
+        credentials: "include", // ✅ สำคัญ!
       });
 
       const data = await res.json();
+      console.log('Login response:', data);
       if (!res.ok) {
         setError(data.error || "Login failed");
         return;
       }
 
-      // 🔒 Save JWT token (example: localStorage or cookie)
-      localStorage.setItem("token", data.token);
 
-      // ✅ Redirect on successful login
-      router.push("/");
+      if (data.role === "admin") {
+        // ✅ Redirect on successful login
+        router.replace("/adminpage");
+        router.refresh();
+      } else {
+        router.replace("/");
+      }
     } catch (err) {
       setError("Something went wrong");
     }
