@@ -61,6 +61,23 @@ type ClaimDetail = {
 /* ------------ Config ------------ */
 const URL_PREFIX =
   process.env.NEXT_PUBLIC_URL_PREFIX || (typeof window !== "undefined" ? "" : "");
+const DETECT_API_BASE =
+  process.env.NEXT_PUBLIC_DETECT_API_BASE || "http://localhost:8000";
+
+/* ------------ Types: API /detect/analyze ------------ */
+type AnalyzeDamageResponse = {
+  ok: boolean;
+  width: number;
+  height: number;
+  parts: Array<{
+    part: string;
+    bbox: [number, number, number, number];
+    damages: Array<{ class: string; confidence: number; mask_iou: number }>;
+  }>;
+  overlay_image_b64?: string;
+  overlay_mime?: string;
+  message?: string;
+};
 
 /* ------------ API ------------ */
 async function fetchDetail(id: string): Promise<ClaimDetail> {
@@ -73,6 +90,39 @@ async function fetchDetail(id: string): Promise<ClaimDetail> {
   return json.data as ClaimDetail;
 }
 
+/** เรียก FastAPI /detect/analyze โดยส่งรูปจาก URL */
+async function analyzeImageByUrl(
+  imageUrl: string,
+  params: { conf_parts?: number; conf_damage?: number; imgsz?: number; mask_iou_thresh?: number; render_overlay?: boolean } = {}
+): Promise<AnalyzeDamageResponse> {
+  // ดึงรูปเป็น blob (ต้องเปิด CORS ที่ที่เก็บรูป)
+  const imgResp = await fetch(imageUrl, { mode: "cors" });
+  if (!imgResp.ok) throw new Error("โหลดรูปจาก URL ไม่สำเร็จ");
+  const blob = await imgResp.blob();
+  const file = new File([blob], "upload.jpg", { type: blob.type || "image/jpeg" });
+
+  const qs = new URLSearchParams({
+    conf_parts: String(params.conf_parts ?? 0.3),
+    conf_damage: String(params.conf_damage ?? 0.25),
+    imgsz: String(params.imgsz ?? 640),
+    mask_iou_thresh: String(params.mask_iou_thresh ?? 0.1),
+    render_overlay: String(params.render_overlay ?? true),
+  }).toString();
+
+  const form = new FormData();
+  form.append("file", file);
+
+  const resp = await fetch(`${DETECT_API_BASE}/detect/analyze?${qs}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`วิเคราะห์ไม่สำเร็จ: ${txt}`);
+  }
+  return (await resp.json()) as AnalyzeDamageResponse;
+}
+
 /* ------------ Helpers ------------ */
 const thDate = (iso?: string) => {
   if (!iso) return "-";
@@ -82,6 +132,43 @@ const thDate = (iso?: string) => {
 
 const readAccidentType = (a?: AccidentDraft | null) => a?.accidentType ?? "-";
 const readAccidentDate = (a?: AccidentDraft | null) => thDate(a?.date);
+
+/** แปลงผล parts + bbox → กล่อง Annotation (normalized 0..1) */
+function partsToBoxes(
+  res: AnalyzeDamageResponse
+): Annotation[] {
+  const W = res.width || 1;
+  const H = res.height || 1;
+  const palette = ["#F59E0B", "#EF4444", "#8B5CF6", "#10B981", "#3B82F6", "#06B6D4", "#84CC16"];
+  let idx = 0;
+
+  return res.parts.map((p) => {
+    const [x1, y1, x2, y2] = p.bbox;
+    const w = Math.max(1, x2 - x1);
+    const h = Math.max(1, y2 - y1);
+    const color = palette[idx++ % palette.length];
+
+    const damageText =
+      p.damages && p.damages.length
+        ? p.damages.map((d) => d.class).join(", ")
+        : "-";
+
+    const areaPercent = Math.round(((w * h) / (W * H)) * 100);
+
+    return {
+      id: idx,
+      part: p.part,
+      damage: damageText,
+      severity: "A",
+      areaPercent,
+      color,
+      x: x1 / W,
+      y: y1 / H,
+      w: w / W,
+      h: h / H,
+    } as Annotation;
+  });
+}
 
 /* ====================================================================== */
 export default function InspectPage() {
@@ -93,7 +180,7 @@ export default function InspectPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // รวมรูปจาก type ของคุณ → {url, side?} เพื่อส่งให้ ImageList/ImageViewer
+  // รวมรูปจาก type ของคุณ → {url, side?}
   const images = useMemo(() => {
     const arr: { url: string; side?: string }[] = [];
     const acc = detail?.accident;
@@ -105,10 +192,13 @@ export default function InspectPage() {
     return arr;
   }, [detail]);
 
-  // ภาพที่เลือก + กล่องความเสียหาย + ระดับการวิเคราะห์
+  // ภาพที่เลือก + กล่องความเสียหาย + ระดับการวิเคราะห์ + overlay ต่อรูป
   const [activeIndex, setActiveIndex] = useState(0);
   const [boxes, setBoxes] = useState<Annotation[]>([]);
   const [analysisLevel, setAnalysisLevel] = useState(70);
+  const [overlayByIndex, setOverlayByIndex] = useState<Record<number, string>>({});
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
   // โหลดรายละเอียด
   useEffect(() => {
@@ -120,13 +210,6 @@ export default function InspectPage() {
         const d = await fetchDetail(claimId);
         if (!alive) return;
         setDetail(d);
-
-        // seed กล่องตัวอย่างให้ “เหมือนรูปแรก”
-        setBoxes([
-          { id: 1, part: "ประตูหน้า",     damage: "บุบ",  severity: "A", areaPercent: 70, color: "#F59E0B", x: 0.05, y: 0.35, w: 0.55, h: 0.35 },
-          { id: 2, part: "กระจกมองหลัง", damage: "-",    severity: "A", areaPercent: 9,  color: "#8B5CF6", x: 0.46, y: 0.05, w: 0.30, h: 0.18 },
-          { id: 3, part: "ล้อหน้า",       damage: "แตก",  severity: "A", areaPercent: 21, color: "#EF4444", x: 0.67, y: 0.48, w: 0.18, h: 0.33 },
-        ]);
       } catch (e: any) {
         if (alive) setErr(e?.message ?? "เกิดข้อผิดพลาด");
       } finally {
@@ -136,22 +219,46 @@ export default function InspectPage() {
     return () => { alive = false; };
   }, [claimId]);
 
-  // handlers
-  const handleAddBox = () => {
-    const id = (boxes.at(-1)?.id ?? 0) + 1;
-    const colors = ["#F59E0B", "#EF4444", "#8B5CF6", "#10B981", "#3B82F6"];
-    const color = colors[id % colors.length];
-    setBoxes((xs) => [
-      ...xs,
-      { id, part: `จุดที่ ${id}`, damage: "-", severity: "B", areaPercent: 10, color, x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
-    ]);
-  };
+  // วิเคราะห์รูปภาพอัตโนมัติเมื่อมีรูปแรก (ครั้งเดียวต่อ index)
+  useEffect(() => {
+    if (images.length === 0) return;
+    if (overlayByIndex[0]) return; // วิเคราะห์แล้ว
+    // auto วิเคราะห์รูปแรก
+    void analyzeActiveImage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images.length]);
 
-  const handleUpdateBox = (next: Annotation) =>
-    setBoxes((xs) => xs.map((x) => (x.id === next.id ? next : x)));
+  // เรียก FastAPI วิเคราะห์ภาพที่เลือก
+  async function analyzeActiveImage(index = activeIndex) {
+    const img = images[index];
+    if (!img?.url) return;
+    try {
+      setAnalyzing(true);
+      setAnalyzeError(null);
 
-  const handleRemoveBox = (id: number) =>
-    setBoxes((xs) => xs.filter((x) => x.id !== id));
+      const res = await analyzeImageByUrl(img.url, {
+        conf_parts: 0.3,
+        conf_damage: 0.25,
+        imgsz: 640,
+        mask_iou_thresh: 0.1,
+        render_overlay: true,
+      });
+
+      // กล่องจาก bbox (แทน seed เดิม)
+      const newBoxes = partsToBoxes(res);
+      setBoxes(newBoxes);
+
+      // เก็บ overlay ต่อภาพ
+      if (res.overlay_image_b64) {
+        const overlayUrl = `data:${res.overlay_mime || "image/jpeg"};base64,${res.overlay_image_b64}`;
+        setOverlayByIndex((m) => ({ ...m, [index]: overlayUrl }));
+      }
+    } catch (e: any) {
+      setAnalyzeError(e?.message ?? "วิเคราะห์ภาพไม่สำเร็จ");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
 
   // States
   if (!claimId) return <div className="p-6 text-rose-600">ไม่พบ claim_id</div>;
@@ -162,6 +269,8 @@ export default function InspectPage() {
   const title =
     `${detail?.car?.car_brand ?? "รถ"} ${detail?.car?.car_model ?? ""} ` +
     `ทะเบียน ${detail?.car?.car_license_plate ?? "-"}`;
+
+  const mainImageUrl = overlayByIndex[activeIndex] || images[activeIndex]?.url;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#F1F5FF] via-[#F7FAFF] to-white">
@@ -180,22 +289,54 @@ export default function InspectPage() {
             <ImageList
               images={images}
               activeIndex={activeIndex}
-              onSelect={setActiveIndex}
+              onSelect={(i) => {
+                setActiveIndex(i);
+                // ถ้ายังไม่เคยวิเคราะห์ภาพนี้ ให้ลองวิเคราะห์เมื่อผู้ใช้เลือก
+                if (!overlayByIndex[i]) void analyzeActiveImage(i);
+              }}
             />
           </aside>
 
           {/* กลาง */}
           <section className="md:col-span-4 lg:col-span-6">
             <ImageViewer
-              imageUrl={images[activeIndex]?.url}
+              imageUrl={mainImageUrl}
               imageLabel={images[activeIndex]?.side}
               boxes={boxes}
-              onAddBox={handleAddBox}
+              onAddBox={() => {
+                // เพิ่มกล่องมือ
+                const id = (boxes.at(-1)?.id ?? 0) + 1;
+                const colors = ["#F59E0B", "#EF4444", "#8B5CF6", "#10B981", "#3B82F6"];
+                const color = colors[id % colors.length];
+                setBoxes((xs) => [
+                  ...xs,
+                  { id, part: `จุดที่ ${id}`, damage: "-", severity: "B", areaPercent: 10, color, x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+                ]);
+              }}
             />
+
+            {/* Action row: วิเคราะห์ภาพนี้ */}
+            <div className="mt-3 flex items-center justify-between">
+              <div className="text-xs text-zinc-500">
+                {analyzing ? "กำลังวิเคราะห์ภาพ…" : analyzeError ? `ผิดพลาด: ${analyzeError}` : "ผลวิเคราะห์จากโมเดล YOLO จะวาดกรอบอัตโนมัติ"}
+              </div>
+              <button
+                disabled={analyzing || !images[activeIndex]?.url}
+                onClick={() => analyzeActiveImage(activeIndex)}
+                className={`rounded-xl px-3 py-1.5 text-sm font-medium ${
+                  analyzing
+                    ? "bg-zinc-200 text-zinc-500"
+                    : "bg-indigo-600 text-white hover:bg-indigo-700"
+                }`}
+              >
+                {analyzing ? "กำลังวิเคราะห์…" : "วิเคราะห์ภาพนี้"}
+              </button>
+            </div>
+
             <DamageTable
               boxes={boxes}
-              onChange={handleUpdateBox}
-              onRemove={handleRemoveBox}
+              onChange={(next) => setBoxes((xs) => xs.map((x) => (x.id === next.id ? next : x)))}
+              onRemove={(id) => setBoxes((xs) => xs.filter((x) => x.id !== id))}
               onDone={() => router.push(`/adminpage/reportsrequest`)}
             />
           </section>
