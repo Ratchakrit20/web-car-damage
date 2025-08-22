@@ -36,6 +36,66 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 
+/**
+ * GET /api/claimreport/listall
+ * ดึงรายการรายงานเคลมทั้งหมด (ทุก user)
+ */
+router.get("/listall", async (req: Request, res: Response) => {
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 100;
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        cr.id AS claim_id,
+        cr.user_id,
+        cr.status,
+        cr.selected_car_id,
+        cr.accident_detail_id,
+        cr.created_at,
+
+        ad.accident_type,
+        ad.accident_date,
+        ad.accident_time,
+        ad.area_type,
+        ad.province, ad.district, ad.road, ad.nearby, ad.details,
+        ad.file_url AS thumbnail_url,
+        ad.media_type,
+
+        ip.car_brand, ip.car_model, ip.car_year,
+        ip.car_license_plate AS license_plate,
+
+        (
+          SELECT COALESCE(
+            json_agg(
+              json_build_object(
+                'id', ei.id,
+                'original_url', ei.original_url,
+                'evaluated_url', ei.evaluated_url,
+                'side', ei.side
+              )
+              ORDER BY ei.id ASC
+            ), '[]'::json
+          )
+          FROM evaluation_images ei
+          WHERE ei.claim_id = cr.id
+        ) AS images
+
+      FROM claim_requests cr
+      JOIN accident_details ad ON ad.id = cr.accident_detail_id
+      LEFT JOIN insurance_policies ip ON ip.id = cr.selected_car_id
+      ORDER BY COALESCE(ad.accident_date, cr.created_at::date) DESC, cr.created_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return res.json({ ok: true, data: rows });
+  } catch (err) {
+    console.error("claimreport list error:", err);
+    return res.status(500).json({ ok: false, message: "server error" });
+  }
+});
 
 
 

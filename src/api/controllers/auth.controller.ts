@@ -46,7 +46,7 @@ export const login = async (req: Request, res: Response) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 30 * 60 * 1000,
     });
 
     // ✅ ส่ง role ให้ FE รู้ทันที

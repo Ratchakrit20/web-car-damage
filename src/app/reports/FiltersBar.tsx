@@ -21,7 +21,6 @@ export default function FiltersBar({
   const statuses: Array<ClaimStatus | "ทั้งหมด"> = [
     "ทั้งหมด",
     "กำลังตรวจสอบ",
-    "รอข้อมูล",
     "สำเร็จ",
     "ปฏิเสธ",
   ];

@@ -96,7 +96,7 @@ export default function ReportsView({
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {(["ทั้งหมด", "กำลังตรวจสอบ", "สำเร็จ", "ปฏิเสธ", "รอข้อมูล"] as const).map(
+                {(["ทั้งหมด", "กำลังตรวจสอบ", "สำเร็จ", "ปฏิเสธ"] as const).map(
                   (s) => (
                     <button
                       key={s}

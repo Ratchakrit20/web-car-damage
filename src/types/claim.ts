@@ -12,7 +12,7 @@ export type User = {
 // Centralized types for Claim/Accident across pages
 // --------------------------------------------------
 
-export type ClaimStatus = "กำลังตรวจสอบ" | "สำเร็จ" | "ปฏิเสธ" | "รอข้อมูล";
+export type ClaimStatus = "กำลังตรวจสอบ" | "สำเร็จ" | "ปฏิเสธ" ;
 
 export type MediaItem = {
   url: string;
