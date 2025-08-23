@@ -3,7 +3,7 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { User } from "@/types/claim";
+import type { User, MediaItem, DamagePhoto, Car, AccidentDraft} from "@/types/claim";
 import InspectHeader from "./InspectHeader";
 import ImageList from "./ImageList";
 import ImageViewer, { Annotation } from "./ImageViewer";
@@ -11,44 +11,6 @@ import DamageTable from "./DamageTable";
 import SummaryPanel from "./SummaryPanel";
 
 /* ------------ Types ของคุณ ------------ */
-export type MediaItem = {
-  url: string;
-  type?: "image" | "video";
-  publicId?: string;
-};
-
-export type DamagePhoto = MediaItem & {
-  side?: "ซ้าย" | "ขวา" | "หน้า" | "หลัง" | "ไม่ระบุ";
-  // meta อื่น ๆ (optional)
-  type?: string | null;
-  url?: string | null;
-};
-
-export type Car = {
-  id: number;
-  car_brand: string;
-  car_model: string;
-  car_year: string | number;
-  car_license_plate: string;
-  insurance_type: string;
-  policy_number: string;
-  coverage_end_date: string; // ISO date
-};
-
-export type AccidentDraft = {
-  accidentType: string;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:mm / HH:mm:ss
-  province: string | null;
-  district: string | null;
-  road?: string | null;
-  areaType: string;
-  nearby?: string | null;
-  details?: string | null;
-  location: { lat: number; lng: number; accuracy?: number | null };
-  evidenceMedia?: MediaItem[];   // หลักฐานทั่วไป
-  damagePhotos?: DamagePhoto[];  // รูปความเสียหาย (อาจมี side)
-};
 
 type ClaimDetail = {
   claim_id: number | string;
@@ -189,12 +151,17 @@ export default function InspectPage() {
   const [err, setErr] = useState<string | null>(null);
 
   // รวมรูปจาก type ของคุณ → {url, side?}
+  // ให้ images มี { id, url, side }
   const images = useMemo(() => {
-    const arr: { url: string; side?: string }[] = [];
+    const arr: { id: number | string; url: string; side?: string }[] = [];
     const acc = detail?.accident;
 
-    acc?.damagePhotos?.forEach((p) => {
-      if (p?.url) arr.push({ url: p.url as string, side: p.side ?? undefined });
+    acc?.damagePhotos?.forEach((p: any, idx: number) => {
+      if (p?.url) {
+        // ✅ ใช้ id จริงจาก backend (evaluation_images.id)
+        const imageId = p.id ?? p.evaluation_image_id ?? (idx + 1);
+        arr.push({ id: imageId, url: p.url as string, side: p.side ?? undefined });
+      }
     });
 
     return arr;
@@ -204,6 +171,10 @@ export default function InspectPage() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [boxesByIndex, setBoxesByIndex] = useState<Record<number, Annotation[]>>({});
   const currentBoxes = boxesByIndex[activeIndex] ?? [];
+  const [addMode, setAddMode] = useState(false);
+  // สีวนเล่น
+  const palette = ["#F59E0B", "#EF4444", "#8B5CF6", "#10B981", "#3B82F6"];
+
   const [analysisLevel, setAnalysisLevel] = useState(50);
   const [overlayByIndex, setOverlayByIndex] = useState<Record<number, string>>({});
   const [analyzing, setAnalyzing] = useState(false);
@@ -323,7 +294,64 @@ export default function InspectPage() {
     }
   }
 
-  
+  async function fetchSavedBoxes(imageId: number | string) {
+    const r = await fetch(`${URL_PREFIX}/api/image-annotations?image_id=${encodeURIComponent(String(imageId))}`, {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!r.ok) return [];
+    const j = await r.json();
+    const rows = j?.data ?? [];
+    // map DB → Annotation
+    return rows.map((r: any, i: number) => ({
+      id: r.id ?? i + 1,
+      part: r.part_name,
+      damage: r.damage_name,
+      severity: r.severity ?? "A",
+      areaPercent: r.area_percent ?? undefined,
+      color: "#F59E0B", // หรือวนพาเลตตามใจ
+      x: r.x, y: r.y, w: r.w, h: r.h,
+    })) as Annotation[];
+  }
+
+  function round3(n: number) {
+    return Math.round(n * 1000) / 1000; // ให้เข้ากับ unique index แบบปัดทศนิยม
+  }
+
+  async function saveCurrentImage() {
+    const img = images[activeIndex];
+    const boxes = boxesByIndex[activeIndex] ?? [];
+    if (!img?.id) {
+      alert("ไม่พบ image id"); return;
+    }
+    const payload = {
+      image_id: img.id,          // = evaluation_image_id
+      boxes: boxes.map((b) => ({
+        part_name: b.part,
+        damage_name: b.damage,
+        severity: b.severity ?? "A",
+        area_percent: b.areaPercent ?? null,
+        x: round3(b.x), y: round3(b.y), w: round3(b.w), h: round3(b.h),
+      })),
+    };
+
+    const resp = await fetch(`${URL_PREFIX}/api/image-annotations/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const t = await resp.text();
+      alert(`บันทึกไม่สำเร็จ: ${t}`);
+      return;
+    }
+    const j = await resp.json();
+    console.log("saved:", j);
+    alert("บันทึกเรียบร้อย");
+  }
+
+
   // States
   if (!claimId) return <div className="p-6 text-rose-600">ไม่พบ claim_id</div>;
   if (loading)   return <div className="p-6 text-zinc-600">กำลังโหลด…</div>;
@@ -354,11 +382,19 @@ export default function InspectPage() {
             <ImageList
               images={images}
               activeIndex={activeIndex}
-              onSelect={(i) => {
+              onSelect={async (i) => {
                 setActiveIndex(i);
-                // ถ้ายังไม่เคยวิเคราะห์ภาพนี้ ให้ลองวิเคราะห์เมื่อเลือก
-                if (!overlayByIndex[i] && !boxesByIndex[i]) {
-                  void analyzeActiveImage(i);
+                if (!boxesByIndex[i]) {
+                  const imageId = images[i]?.id;
+                  if (imageId) {
+                    const saved = await fetchSavedBoxes(imageId);
+                    if (saved.length) {
+                      setBoxesByIndex((m) => ({ ...m, [i]: saved }));
+                      return; // มีของเซฟแล้ว ไม่ต้องวิเคราะห์ซ้ำทันที
+                    }
+                  }
+                  // ถ้ายังไม่มีของเซฟ ลองเรียกวิเคราะห์อัตโนมัติ
+                  if (!overlayByIndex[i]) void analyzeActiveImage(i);
                 }
               }}
               onBack={() => router.push('/adminpage/reportsrequest')}
@@ -371,17 +407,28 @@ export default function InspectPage() {
               imageUrl={mainImageUrl}
               imageLabel={images[activeIndex]?.side}
               boxes={currentBoxes}
-              onAddBox={() => {
-                const id = (currentBoxes.at(-1)?.id ?? 0) + 1;
-                const colors = ["#F59E0B", "#EF4444", "#8B5CF6", "#10B981", "#3B82F6"];
-                const color = colors[id % colors.length];
+              startDrawExternally={addMode}           // ถ้าอยากบังคับจาก parent
+              onExitDraw={() => setAddMode(false)}    // ปิดโหมดวาดเมื่อเสร็จ/ยกเลิก
+              onCreate={(rect) => {
+                const nextId = (currentBoxes.at(-1)?.id ?? 0) + 1;
+                const color = palette[nextId % palette.length];
+
                 setBoxesByIndex((m) => ({
                   ...m,
                   [activeIndex]: [
                     ...(m[activeIndex] ?? []),
-                    { id, part: `จุดที่ ${id}`, damage: "-", severity: "B", areaPercent: 10, color, x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+                    {
+                      id: nextId,
+                      part: `จุดที่ ${nextId}`,
+                      damage: "-",
+                      severity: "B",
+                      areaPercent: Math.round(rect.w * rect.h * 100),
+                      color,
+                      ...rect,
+                    },
                   ],
                 }));
+                setAddMode(false); // ปิดโหมดวาด
               }}
             />
 
@@ -417,6 +464,7 @@ export default function InspectPage() {
                   [activeIndex]: (m[activeIndex] ?? []).filter((x) => x.id !== id),
                 }))
               }
+              saveCurrentImage={saveCurrentImage}
               onDone={() => router.push(`/adminpage/reportsrequest`)}
             />
           </section>

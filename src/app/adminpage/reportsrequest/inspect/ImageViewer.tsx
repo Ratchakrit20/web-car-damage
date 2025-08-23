@@ -1,5 +1,5 @@
 "use client";
-import React, { useLayoutEffect, useRef, useState } from "react";
+import React, { useLayoutEffect, useRef, useState, useCallback } from "react";
 export type Annotation = {
   id: number;
   part: string;
@@ -10,107 +10,150 @@ export type Annotation = {
   x: number; y: number; w: number; h: number; // 0..1
 };
 
+type Props = {
+  imageUrl?: string;
+  imageLabel?: string;
+  boxes: Annotation[];
+  /** เรียกเมื่อวาดกล่องเสร็จ */
+  onCreate?: (rect: { x: number; y: number; w: number; h: number }) => void;
+  /** ถ้ายังมีปุ่มเพิ่มใน parent ให้เรียก toggle โหมดวาดเองได้ */
+  startDrawExternally?: boolean;
+  onExitDraw?: () => void;
+};
+function round3(n: number) {
+  return Math.round(n * 1000) / 1000;
+}
 export default function ImageViewer({
   imageUrl,
   imageLabel,
   boxes,
-  onAddBox,
-}: {
-  imageUrl?: string;
-  imageLabel?: string;
-  boxes: Annotation[];
-  onAddBox: () => void;
-}) {
-    const containerRef = useRef<HTMLDivElement>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
+  onCreate,
+  startDrawExternally = false,
+  onExitDraw,
+}: Props) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
+  const [temp, setTemp] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
-  const [lay, setLay] = useState({ dw: 0, dh: 0, left: 0, top: 0 });
+  // ถ้า parent ส่งสัญญาณให้เริ่มวาดจากภายนอก
+  React.useEffect(() => {
+    if (startDrawExternally) {
+      setDrawMode(true);
+    }
+  }, [startDrawExternally]);
 
-  // คำนวณตำแหน่ง/ขนาดรูปที่แสดงจริง (object-contain)
-  const recalc = () => {
-    const c = containerRef.current;
-    const img = imgRef.current;
-    if (!c || !img) return;
+  const getRel = useCallback((clientX: number, clientY: number) => {
+    const el = wrapRef.current!;
+    const r = el.getBoundingClientRect();
+    const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+    const x = clamp((clientX - r.left) / r.width, 0, 1);
+    const y = clamp((clientY - r.top) / r.height, 0, 1);
+    return { x, y };
+  }, []);
 
-    const cw = c.clientWidth;
-    const ch = c.clientHeight;
-    const nw = img.naturalWidth || 1;
-    const nh = img.naturalHeight || 1;
-
-    const scale = Math.min(cw / nw, ch / nh);
-    const dw = Math.round(nw * scale);
-    const dh = Math.round(nh * scale);
-    const left = Math.round((cw - dw) / 2);
-    const top = Math.round((ch - dh) / 2);
-
-    setLay({ dw, dh, left, top });
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!drawMode || !wrapRef.current) return;
+    wrapRef.current.setPointerCapture(e.pointerId);
+    const p = getRel(e.clientX, e.clientY);
+    setTemp({ x: p.x, y: p.y, w: 0, h: 0 });
+    setIsDrawing(true);
   };
 
-  useLayoutEffect(() => {
-    recalc();
-    const ro = new ResizeObserver(recalc);
-    if (containerRef.current) ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, [imageUrl]);
-  return (
-    <div className="rounded-3xl bg-white ring-1 ring-zinc-200 shadow-sm p-3">
-      <div className="mb-2 text-sm font-medium text-zinc-700">
-        ภาพ {imageLabel ? `· ${imageLabel}` : ""}
-      </div>
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!isDrawing || !temp) return;
+    const p = getRel(e.clientX, e.clientY);
+    const x1 = Math.min(temp.x, p.x);
+    const y1 = Math.min(temp.y, p.y);
+    const x2 = Math.max(temp.x, p.x);
+    const y2 = Math.max(temp.y, p.y);
+    setTemp({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+  };
 
-      {/* กรอบคุมภาพแบบ fixed height แต่ยืดหยุ่นกับจอ */}
+  const finishDraw = () => {
+    if (!isDrawing || !temp) return;
+    setIsDrawing(false);
+    setDrawMode(false);
+    // กันกรอบเล็กเกินไป
+    if (temp.w > 0.01 && temp.h > 0.01) {
+      onCreate?.({
+        x: round3(temp.x),
+        y: round3(temp.y),
+        w: round3(temp.w),
+        h: round3(temp.h),
+      });
+    }
+    setTemp(null);
+    onExitDraw?.();
+  };
+
+  const onPointerUp = () => finishDraw();
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setIsDrawing(false);
+      setDrawMode(false);
+      setTemp(null);
+      onExitDraw?.();
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm">
+      <div className="mb-2 text-sm text-zinc-600">ภาพ · {imageLabel ?? "ไม่ระบุ"}</div>
+
       <div
-        ref={containerRef}
-        className="relative  w-full min-h-[260px] sm:min-h-[360px] lg:min-h-[440px]"
+        ref={wrapRef}
+        className={`relative w-full overflow-hidden rounded-xl bg-zinc-100 select-none ${
+          drawMode ? "cursor-crosshair" : ""
+        }`}
+        style={{ touchAction: "none" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onKeyDown={onKeyDown}
+        tabIndex={0} // ให้จับคีย์ ESC ได้
       >
-        {/* รูปวางกลางกรอบแบบไม่ครอป */}
-        {imageUrl && (
-          <img
-            ref={imgRef}
-            src={imageUrl}
-            alt={imageLabel ?? ""}
-            onLoad={recalc}
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2
-                       max-w-full max-h-full object-contain select-none rounded-2xl"
-            draggable={false}
+        {/* รูป */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={imageUrl} alt={imageLabel ?? ""} className="block w-full h-auto" />
+
+        {/* กล่องถาวร */}
+        {boxes.map((b) => (
+          <div
+            key={b.id}
+            className="absolute rounded-xl border-2"
+            style={{
+              left: `${b.x * 100}%`,
+              top: `${b.y * 100}%`,
+              width: `${b.w * 100}%`,
+              height: `${b.h * 100}%`,
+              borderColor: b.color,
+            }}
+          >
+            <div
+              className="absolute -top-3 left-2 rounded-full px-2 py-0.5 text-xs font-semibold text-white"
+              style={{ background: b.color }}
+              title={`${b.part} : ${b.damage}`}
+            >
+              {b.id}
+            </div>
+          </div>
+        ))}
+
+        {/* กล่องกำลังวาด */}
+        {temp && (
+          <div
+            className="absolute rounded-xl border-2 border-dashed"
+            style={{
+              left: `${temp.x * 100}%`,
+              top: `${temp.y * 100}%`,
+              width: `${temp.w * 100}%`,
+              height: `${temp.h * 100}%`,
+              borderColor: "#0ea5e9",
+              background: "rgba(14,165,233,0.1)",
+            }}
           />
         )}
-
-        {/* 👇 overlay ขนาดเท่ารูปจริง และเลื่อนตาม offset ⇒ กรอบไม่ล้นแล้ว */}
-        <div
-          className="absolute pointer-events-none"
-          style={{ left: lay.left, top: lay.top, width: lay.dw, height: lay.dh }}
-        >
-          {boxes.map((b) => {
-            // กันล้น: clamp ค่า 0..1
-            const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-            const x = clamp01(b.x), y = clamp01(b.y);
-            const w = clamp01(b.w), h = clamp01(b.h);
-
-            return (
-              <div
-                key={b.id}
-                className="absolute rounded-xl border-2"
-                style={{
-                  left: `${x * 100}%`,
-                  top: `${y * 100}%`,
-                  width: `${w * 100}%`,
-                  height: `${h * 100}%`,
-                  borderColor: b.color,
-                }}
-              >
-                {/* หมุดหมายเลข */}
-                <div
-                  className="absolute -top-3 -left-3 flex h-7 w-7 items-center justify-center
-                             rounded-full text-white text-sm font-semibold shadow"
-                  style={{ background: b.color }}
-                >
-                  {b.id}
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </div>
 
       <div className="mt-3 flex items-center justify-between">
@@ -118,7 +161,7 @@ export default function ImageViewer({
           หากระบบตรวจจับไม่ครบ คุณสามารถกด “เพิ่มจุดเสียหาย” แล้วแก้ไขจากตารางด้านล่าง
         </div>
         <button
-          onClick={onAddBox}
+          onClick={() => setDrawMode(true)}
           className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 ring-1 ring-zinc-200 hover:bg-zinc-50"
         >
           ➕ เพิ่มจุดเสียหาย

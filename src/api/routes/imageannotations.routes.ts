@@ -66,29 +66,7 @@ router.get("/by-image", async (req: Request, res: Response) => {
   }
 });
 
-/* =========================================================================
- * GET /api/image-annotations/by-claim?claim_id=456  (ตัวเลือก)
- *  -> ดึงทุกกล่องของเคส โดย join ผ่าน evaluation_images
- * ========================================================================= */
-router.get("/by-claim", async (req: Request, res: Response) => {
-  const claimId = Number(req.query.claim_id);
-  if (!claimId) return res.status(400).json({ ok: false, message: "claim_id required" });
 
-  try {
-    const { rows } = await pool.query(
-      `SELECT ida.*, ei.original_url, ei.side
-       FROM image_damage_annotations ida
-       JOIN evaluation_images ei ON ei.id = ida.evaluation_image_id
-       WHERE ei.claim_id = $1
-       ORDER BY ida.created_at`,
-      [claimId]
-    );
-    return res.json({ ok: true, data: rows });
-  } catch (err) {
-    console.error("annotations by-claim error:", err);
-    return res.status(500).json({ ok: false, message: "server error" });
-  }
-});
 
 /* =========================================================================
  * POST /api/image-annotations/save
@@ -99,43 +77,40 @@ router.get("/by-claim", async (req: Request, res: Response) => {
 router.post("/save", async (req: Request, res: Response) => {
   const body = req.body as SaveBody;
   const imageId = Number(body?.image_id);
-  const createdBy = body?.created_by ?? null;
   const boxes = Array.isArray(body?.boxes) ? body.boxes.map(normBox) : [];
 
-  if (!imageId) return res.status(400).json({ ok: false, message: "image_id required" });
+  if (!imageId) {
+    return res.status(400).json({ ok: false, message: "image_id required" });
+  }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // ลบของเก่าของรูปนี้
+    // ลบของเก่าในรูปนี้ก่อน
     await client.query(
       `DELETE FROM image_damage_annotations WHERE evaluation_image_id = $1`,
       [imageId]
     );
 
     if (boxes.length > 0) {
-      // build bulk insert
+      // ใส่ใหม่แบบ bulk
       const cols =
-        "(evaluation_image_id, part_name, damage_name, severity, area_percent, x, y, w, h, confidence, mask_iou, source, created_by, created_at)";
+        "(evaluation_image_id, part_name, damage_name, severity, area_percent, x, y, w, h, created_at)";
       const placeholders: string[] = [];
       const values: any[] = [imageId];
-      let p = 2; // เริ่มนับพารามิเตอร์ตั้งแต่ $2 (เพราะ $1 = imageId)
+      let p = 2; // $1 ใช้ imageId ไปแล้ว
 
       for (const b of boxes) {
         placeholders.push(
-          `($1, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, NOW())`
+          `($1, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, NOW())`
         );
         values.push(
           b.part_name,
           b.damage_name,
           b.severity ?? "A",
           b.area_percent ?? null,
-          b.x, b.y, b.w, b.h,
-          b.confidence ?? null,
-          b.mask_iou ?? null,
-          b.source ?? "manual",
-          createdBy
+          b.x, b.y, b.w, b.h
         );
       }
 
