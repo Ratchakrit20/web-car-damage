@@ -14,6 +14,7 @@ export type User = {
 export type ClaimStatus = "กำลังตรวจสอบ" | "สำเร็จ" | "ปฏิเสธ" ;
 
 export type MediaItem = {
+  id: number;
   url: string;
   type?: "image" | "video";
   publicId?: string;

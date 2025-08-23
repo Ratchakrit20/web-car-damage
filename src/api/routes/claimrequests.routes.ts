@@ -247,6 +247,7 @@ router.get("/detail", async (req: Request, res: Response) => {
       evidenceMedia: r.evidence_file_url ? [{ url: r.evidence_file_url, type: r.media_type ?? "image" }] : [],
       damagePhotos: Array.isArray(r.damage_images)
         ? r.damage_images.map((img: any) => ({
+            id: img.id,
             url: img.original_url,
             type: "image",
             side: img.side ?? "ไม่ระบุ",

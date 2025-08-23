@@ -3,7 +3,7 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { User, MediaItem, DamagePhoto, Car, AccidentDraft} from "@/types/claim";
+import type { User,Car, AccidentDraft } from "@/types/claim";
 import InspectHeader from "./InspectHeader";
 import ImageList from "./ImageList";
 import ImageViewer, { Annotation } from "./ImageViewer";
@@ -11,6 +11,8 @@ import DamageTable from "./DamageTable";
 import SummaryPanel from "./SummaryPanel";
 
 /* ------------ Types ของคุณ ------------ */
+
+
 
 type ClaimDetail = {
   claim_id: number | string;
@@ -159,7 +161,7 @@ export default function InspectPage() {
     acc?.damagePhotos?.forEach((p: any, idx: number) => {
       if (p?.url) {
         // ✅ ใช้ id จริงจาก backend (evaluation_images.id)
-        const imageId = p.id ?? p.evaluation_image_id ?? (idx + 1);
+        const imageId = p.id ;
         arr.push({ id: imageId, url: p.url as string, side: p.side ?? undefined });
       }
     });
