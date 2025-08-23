@@ -3,7 +3,7 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-
+import type { User } from "@/types/claim";
 import InspectHeader from "./InspectHeader";
 import ImageList from "./ImageList";
 import ImageViewer, { Annotation } from "./ImageViewer";
@@ -77,6 +77,13 @@ type AnalyzeDamageResponse = {
   overlay_image_b64?: string;
   overlay_mime?: string;
   message?: string;
+};
+type ModelParams = {
+  conf_parts: number;
+  conf_damage: number;
+  imgsz: number;
+  mask_iou_thresh: number;
+  render_overlay: boolean;
 };
 
 /* ------------ API ------------ */
@@ -175,7 +182,8 @@ export default function InspectPage() {
   const sp = useSearchParams();
   const router = useRouter();
   const claimId = sp.get("claim_id");
-
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [detail, setDetail] = useState<ClaimDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -194,12 +202,66 @@ export default function InspectPage() {
 
   // ภาพที่เลือก + กล่องความเสียหาย + ระดับการวิเคราะห์ + overlay ต่อรูป
   const [activeIndex, setActiveIndex] = useState(0);
-  const [boxes, setBoxes] = useState<Annotation[]>([]);
-  const [analysisLevel, setAnalysisLevel] = useState(70);
+  const [boxesByIndex, setBoxesByIndex] = useState<Record<number, Annotation[]>>({});
+  const currentBoxes = boxesByIndex[activeIndex] ?? [];
+  const [analysisLevel, setAnalysisLevel] = useState(50);
   const [overlayByIndex, setOverlayByIndex] = useState<Record<number, string>>({});
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
+  // config model
+  const [modelParams, setModelParams] = useState<ModelParams>({
+  conf_parts: 0.5,
+  conf_damage: 0.25,
+  imgsz: 640,
+  mask_iou_thresh: 0.1,
+  render_overlay: true,
+  });
+  function paramsFromLevel(level: number): ModelParams {
+    const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+    const t = clamp(level, 0, 100) / 100;
+
+    // ยิ่ง level สูง → ยิ่งละเอียด → ลด conf ลง
+    const conf_parts   = Number((0.6 - (0.6 - 0.2) * t).toFixed(2));  // 0→0.60, 100→0.20
+    const conf_damage  = Number((0.5 - (0.5 - 0.15) * t).toFixed(2)); // 0→0.50, 100→0.15
+
+    return {
+      ...modelParams,
+      conf_parts,
+      conf_damage,
+    };
+  }
+  const handleChangeLevel = (lvl: number) => {
+    setAnalysisLevel(lvl);
+    const p = paramsFromLevel(lvl);
+    setModelParams(p);
+    void analyzeActiveImage(activeIndex, p, true); // บังคับวิเคราะห์ซ้ำด้วยพารามิเตอร์ใหม่
+  };
+  // -------- Auth --------
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_URL_PREFIX}/api/me`, {
+          credentials: 'include',
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        console.log('Auth data:', data.user);
+        setUser(data.user ?? null);
+        setIsAuthenticated(Boolean(data.isAuthenticated));
+      } catch {
+        if (!cancelled) setIsAuthenticated(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated === false) router.replace('/login');
+  }, [isAuthenticated, router]);
   // โหลดรายละเอียด
   useEffect(() => {
     if (!claimId) { setErr("ไม่พบ claim_id"); setLoading(false); return; }
@@ -229,24 +291,25 @@ export default function InspectPage() {
   }, [images.length]);
 
   // เรียก FastAPI วิเคราะห์ภาพที่เลือก
-  async function analyzeActiveImage(index = activeIndex) {
+  async function analyzeActiveImage(index = activeIndex, override?: Partial<ModelParams>, force = false) {
     const img = images[index];
     if (!img?.url) return;
     try {
       setAnalyzing(true);
       setAnalyzeError(null);
 
+      const used = { ...modelParams, ...override };
       const res = await analyzeImageByUrl(img.url, {
-        conf_parts: 0.3,
-        conf_damage: 0.25,
-        imgsz: 640,
-        mask_iou_thresh: 0.1,
-        render_overlay: true,
+        conf_parts: used.conf_parts,
+        conf_damage: used.conf_damage,
+        imgsz: used.imgsz,
+        mask_iou_thresh: used.mask_iou_thresh,
+        render_overlay: used.render_overlay,
       });
 
       // กล่องจาก bbox (แทน seed เดิม)
       const newBoxes = partsToBoxes(res);
-      setBoxes(newBoxes);
+      setBoxesByIndex((m) => ({ ...m, [index]: newBoxes }));
 
       // เก็บ overlay ต่อภาพ
       if (res.overlay_image_b64) {
@@ -260,6 +323,7 @@ export default function InspectPage() {
     }
   }
 
+  
   // States
   if (!claimId) return <div className="p-6 text-rose-600">ไม่พบ claim_id</div>;
   if (loading)   return <div className="p-6 text-zinc-600">กำลังโหลด…</div>;
@@ -270,7 +334,8 @@ export default function InspectPage() {
     `${detail?.car?.car_brand ?? "รถ"} ${detail?.car?.car_model ?? ""} ` +
     `ทะเบียน ${detail?.car?.car_license_plate ?? "-"}`;
 
-  const mainImageUrl = overlayByIndex[activeIndex] || images[activeIndex]?.url;
+  // const mainImageUrl = overlayByIndex[activeIndex] || images[activeIndex]?.url;
+  const mainImageUrl = images[activeIndex]?.url;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#F1F5FF] via-[#F7FAFF] to-white">
@@ -291,9 +356,12 @@ export default function InspectPage() {
               activeIndex={activeIndex}
               onSelect={(i) => {
                 setActiveIndex(i);
-                // ถ้ายังไม่เคยวิเคราะห์ภาพนี้ ให้ลองวิเคราะห์เมื่อผู้ใช้เลือก
-                if (!overlayByIndex[i]) void analyzeActiveImage(i);
+                // ถ้ายังไม่เคยวิเคราะห์ภาพนี้ ให้ลองวิเคราะห์เมื่อเลือก
+                if (!overlayByIndex[i] && !boxesByIndex[i]) {
+                  void analyzeActiveImage(i);
+                }
               }}
+              onBack={() => router.push('/adminpage/reportsrequest')}
             />
           </aside>
 
@@ -302,16 +370,18 @@ export default function InspectPage() {
             <ImageViewer
               imageUrl={mainImageUrl}
               imageLabel={images[activeIndex]?.side}
-              boxes={boxes}
+              boxes={currentBoxes}
               onAddBox={() => {
-                // เพิ่มกล่องมือ
-                const id = (boxes.at(-1)?.id ?? 0) + 1;
+                const id = (currentBoxes.at(-1)?.id ?? 0) + 1;
                 const colors = ["#F59E0B", "#EF4444", "#8B5CF6", "#10B981", "#3B82F6"];
                 const color = colors[id % colors.length];
-                setBoxes((xs) => [
-                  ...xs,
-                  { id, part: `จุดที่ ${id}`, damage: "-", severity: "B", areaPercent: 10, color, x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
-                ]);
+                setBoxesByIndex((m) => ({
+                  ...m,
+                  [activeIndex]: [
+                    ...(m[activeIndex] ?? []),
+                    { id, part: `จุดที่ ${id}`, damage: "-", severity: "B", areaPercent: 10, color, x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+                  ],
+                }));
               }}
             />
 
@@ -334,9 +404,19 @@ export default function InspectPage() {
             </div>
 
             <DamageTable
-              boxes={boxes}
-              onChange={(next) => setBoxes((xs) => xs.map((x) => (x.id === next.id ? next : x)))}
-              onRemove={(id) => setBoxes((xs) => xs.filter((x) => x.id !== id))}
+              boxes={currentBoxes}
+              onChange={(next) =>
+                setBoxesByIndex((m) => ({
+                  ...m,
+                  [activeIndex]: (m[activeIndex] ?? []).map((x) => (x.id === next.id ? next : x)),
+                }))
+              }
+              onRemove={(id) =>
+                setBoxesByIndex((m) => ({
+                  ...m,
+                  [activeIndex]: (m[activeIndex] ?? []).filter((x) => x.id !== id),
+                }))
+              }
               onDone={() => router.push(`/adminpage/reportsrequest`)}
             />
           </section>
@@ -344,9 +424,9 @@ export default function InspectPage() {
           {/* ขวา */}
           <aside className="md:col-span-6 lg:col-span-3">
             <SummaryPanel
-              boxes={boxes}
+              boxes={currentBoxes}
               analysisLevel={analysisLevel}
-              onChangeLevel={setAnalysisLevel}
+              onChangeLevel={handleChangeLevel}
             />
           </aside>
         </div>

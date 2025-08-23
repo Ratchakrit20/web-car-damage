@@ -6,10 +6,12 @@ export default function ImageList({
   images,
   activeIndex,
   onSelect,
+  onBack
 }: {
   images: Img[];
   activeIndex: number;
   onSelect: (i: number) => void;
+  onBack: () => void;
 }) {
   return (
     <div className="rounded-3xl bg-white ring-1 ring-zinc-200 shadow-sm p-3">
@@ -38,7 +40,12 @@ export default function ImageList({
           </button>
         ))}
       </div>
-
+      <button
+        className="mt-3 w-full rounded-2xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+        onClick={onBack}
+      >
+        ย้อนกลับ
+      </button>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import meRoutes from './routes/me.routes';
 import policyRoutes from './routes/policy.routes';
 import claimrequestsRoutes from './routes/claimrequests.routes';
 import claimsubmitRoutes from './routes/claimsubmit.routes';
+import imageAnnotationsRouter from "./routes/imageannotations.routes";
 
 dotenv.config();
 
@@ -26,6 +27,8 @@ app.use('/api', meRoutes); // ✅ me route
 app.use('/api/policy', policyRoutes); // ✅ policy route
 app.use('/api/claim-requests', claimrequestsRoutes); // ✅ claim requests route
 app.use('/api/claim-submit', claimsubmitRoutes); // ✅ claim submit route
+app.use("/api/image-annotations", imageAnnotationsRouter);
+
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

@@ -156,7 +156,7 @@ function RequestCard({
               📄 ดูรายงาน PDF
             </button>
             <Link
-              href={`/adminpage/inspect?claim_id=${item.id}`}
+              href={`/adminpage/reportsrequest/inspect?claim_id=${item.id}`}
               className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
             >
               ตรวจสอบความเสียหาย
